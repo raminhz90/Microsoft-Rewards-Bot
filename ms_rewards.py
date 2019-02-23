@@ -110,7 +110,7 @@ def get_search_terms():
     # get unique terms, return an enumerated list
     search_terms = set(search_terms)
     logging.info(msg=f'# of search items: {len(search_terms)}\n')
-    return list(enumerate(search_terms, start=0))
+    return list(enumerate(search_terms, start=1))
 
 
 def get_login_info():
@@ -423,7 +423,7 @@ def search(search_terms, mobile_search=False):
     if mobile_search:
         search_limit = 20
     else:
-        search_limit = 30
+        search_limit = 40
 
     logging.info(msg="Search Start")
     if search_terms == [] or search_terms is None:
@@ -448,8 +448,8 @@ def search(search_terms, mobile_search=False):
                 time.sleep(random.randint(3, 4))  # random sleep for more human-like, and let ms reward website keep up.
 
                 # check to see if search is complete, if yes, break out of loop
-                if num % search_limit == 0:
-                    if mobile_search:
+                if  search_limit % num == 0:
+                    if mobile_search and num>1 :
                         # in mobile mode, get point total does not work if no search is done, URL = 404
                         if get_point_total(mobile=True):
                             logging.info(msg=f'Stopped at search number {num}')
