@@ -109,6 +109,7 @@ def get_search_terms():
             logging.error('Cannot parse, JSON keys are modified.')
     # get unique terms, return an enumerated list
     search_terms = set(search_terms)
+    random.shuffle(search_terms)
     logging.info(msg=f'# of search items: {len(search_terms)}\n')
     return list(enumerate(search_terms, start=1))
 
@@ -750,8 +751,7 @@ if __name__ == '__main__':
 
         # get search terms
         search_list = []
-        if parser.mobile_mode or parser.pc_mode:
-            search_list = get_search_terms()
+        
 
         # get URLs from emailed links
         email_links = []
@@ -764,7 +764,8 @@ if __name__ == '__main__':
         for dict_key in login_dict_keys:
             email = dict_key
             password = login_dict[dict_key]
-
+            if parser.mobile_mode or parser.pc_mode:
+                search_list = get_search_terms()
             if parser.mobile_mode:
                 # MOBILE MODE
                 logging.info(msg='-------------------------MOBILE-------------------------')
