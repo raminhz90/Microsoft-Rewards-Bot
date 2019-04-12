@@ -2,10 +2,6 @@
 # ms_rewards.py - Searches for results via pc bing browser and mobile, completes quizzes on pc bing browser
 # Version 2019.01.01
 
-# TODO replace sleeps with minimum sleeps for explicit waits to work, especially after a page redirect
-# FIXME mobile version does not require re-sign in, but pc version does, why?
-# FIXME Known Cosmetic Issue - logged point total caps out at the point cost of the item on wishlist
-
 import argparse
 import json
 import logging
@@ -14,15 +10,22 @@ import platform
 import random
 import re
 import time
+# TODO replace sleeps with minimum sleeps for explicit waits to work, especially after a page redirect
+# FIXME mobile version does not require re-sign in, but pc version does, why?
+# FIXME Known Cosmetic Issue - logged point total caps out at the point cost of the item on wishlist
+import winsound
 import zipfile
-from _datetime import datetime, timedelta
 
 import requests
 from requests.exceptions import RequestException
 from selenium import webdriver
-from selenium.common.exceptions import WebDriverException, TimeoutException, \
-    ElementClickInterceptedException, ElementNotVisibleException, \
-    ElementNotInteractableException, NoSuchElementException, UnexpectedAlertPresentException
+from selenium.common.exceptions import (ElementClickInterceptedException,
+                                        ElementNotInteractableException,
+                                        ElementNotVisibleException,
+                                        NoSuchElementException,
+                                        TimeoutException,
+                                        UnexpectedAlertPresentException,
+                                        WebDriverException)
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
@@ -30,26 +33,29 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as ec
 from selenium.webdriver.support.ui import WebDriverWait
 
+import Cleanup
+import torswitch
+from _datetime import datetime, timedelta
+
 # URLs
 BING_SEARCH_URL = 'https://www.bing.com/search'
 DASHBOARD_URL = 'https://account.microsoft.com/rewards/dashboard'
 POINT_TOTAL_URL = 'http://www.bing.com/rewardsapp/bepflyoutpage?style=chromeextension'
 
 # user agents for edge/pc and mobile
-PC_USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                 'AppleWebKit/537.36 (KHTML, like Gecko) '
-                 'Chrome/64.0.3282.140 Safari/537.36 Edge/17.17134')
+PC_USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/64.0.3282.140 Safari/537.36 Edge/18.17763')
 MOBILE_USER_AGENT = ('Mozilla/5.0 (Windows Phone 10.0; Android 4.2.1; WebView/3.0) '
                      'AppleWebKit/537.36 (KHTML, like Gecko) coc_coc_browser/64.118.222 '
                      'Chrome/52.0.2743.116 Mobile Safari/537.36 Edge/15.15063')
 
+LOG_LEVEL = logging.INFO
 
 def init_logging():
     # gets dir path of python script, not cwd, for execution on cron
     os.chdir(os.path.dirname(os.path.realpath(__file__)))
     os.makedirs('logs', exist_ok=True)
     log_path = os.path.join('logs', 'ms_rewards.log')
-    logging.basicConfig(filename=log_path, level=logging.INFO,
+    logging.basicConfig(filename=log_path, level=LOG_LEVEL,
                         format='%(asctime)s :: %(levelname)s :: %(name)s :: %(message)s')
 
 
@@ -61,14 +67,15 @@ def parse_args():
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument('--headless', action='store_true', dest='headless_setting', default=False,
                             help='Activates headless mode, default is off.')
-    arg_parser.add_argument('--mobile', action='store_true', dest='mobile_mode', default=False,
+    arg_parser.add_argument('--mobile', action='store_true', dest='mobile_mode', default=True,
                             help='Activates mobile search, default is off.')
-    arg_parser.add_argument('--pc', action='store_true', dest='pc_mode', default=False,
+    arg_parser.add_argument('--pc', action='store_true', dest='pc_mode', default=True,
                             help='Activates pc search, default is off.')
-    arg_parser.add_argument('--quiz', action='store_true', dest='quiz_mode', default=False,
+    arg_parser.add_argument('--quiz', action='store_true', dest='quiz_mode', default=True,
                             help='Activates pc quiz search, default is off.')
     arg_parser.add_argument('--email', action='store_true', dest='email_mode', default=False,
                             help='Activates quiz mode, default is off.')
+
     return arg_parser.parse_args()
 
 
@@ -105,13 +112,21 @@ def get_search_terms():
             time.sleep(random.randint(3, 5))
         except RequestException:
             logging.error('Error retrieving google trends json.')
+            url = f'http://raminhz.ir/sterm.txt'
+            request = requests.get(url)
+            response = json.loads(request.text[5:])
+            # get all trending searches with their related queries
+            for topic in response['default']['trendingSearchesDays'][0]['trendingSearches']:
+                search_terms.append(topic['title']['query'].lower())
+                for related_topic in topic['relatedQueries']:
+                    search_terms.append(related_topic['query'].lower())
+            time.sleep(random.randint(3, 5))
         except KeyError:
             logging.error('Cannot parse, JSON keys are modified.')
     # get unique terms, return an enumerated list
-    search_terms = set(search_terms)
-    random.shuffle(search_terms)
+    
     logging.info(msg=f'# of search items: {len(search_terms)}\n')
-    return list(enumerate(search_terms, start=1))
+    return list(set(search_terms))
 
 
 def get_login_info():
@@ -129,14 +144,18 @@ def download_driver(driver_path, system):
     r = requests.get(url)
     latest_version = r.text
     if system == "Windows":
-        url = "https://chromedriver.storage.googleapis.com/{}/chromedriver_win32.zip".format(latest_version)
+        url = "https://chromedriver.storage.googleapis.com/{}/chromedriver_win32.zip".format(
+            latest_version)
     elif system == "Darwin":
-        url = "https://chromedriver.storage.googleapis.com/{}/chromedriver_mac64.zip".format(latest_version)
+        url = "https://chromedriver.storage.googleapis.com/{}/chromedriver_mac64.zip".format(
+            latest_version)
     elif system == "Linux":
-        url = "https://chromedriver.storage.googleapis.com/{}/chromedriver_linux64.zip".format(latest_version)
+        url = "https://chromedriver.storage.googleapis.com/{}/chromedriver_linux64.zip".format(
+            latest_version)
 
     response = requests.get(url, stream=True)
-    zip_file_path = os.path.join(os.path.dirname(driver_path), os.path.basename(url))
+    zip_file_path = os.path.join(os.path.dirname(
+        driver_path), os.path.basename(url))
     with open(zip_file_path, "wb") as handle:
         for chunk in response.iter_content(chunk_size=512):
             if chunk:  # filter out keep alive chunks
@@ -152,10 +171,11 @@ def download_driver(driver_path, system):
 
     os.chmod(driver_path, 0o755)
     # way to note which chromedriver version is installed
-    open(os.path.join(os.path.dirname(driver_path), "{}.txt".format(latest_version)), "w").close()
+    open(os.path.join(os.path.dirname(driver_path),
+                      "{}.txt".format(latest_version)), "w").close()
 
 
-def browser_setup(headless_mode, user_agent):
+def browser_setup(headless_mode, user_agent, userdata):
     """
     Inits the chrome browser with headless setting and user agent
     :param headless_mode: Boolean
@@ -174,11 +194,14 @@ def browser_setup(headless_mode, user_agent):
     options = Options()
     if headless_mode:
         options.add_argument('--headless')
-
+    options.binary_location = 'chrome\\chrome.exe'
+    options.add_extension("ext\\ext.crx")
     options.add_argument(f'user-agent={user_agent}')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
-
+    options.add_argument("--proxy-server=socks5://" +
+                         '127.0.0.1' + ":" + '9050')
+    options.add_argument("user-data-dir="+userdata)
     chrome_obj = webdriver.Chrome(path, chrome_options=options)
 
     return chrome_obj
@@ -187,24 +210,27 @@ def browser_setup(headless_mode, user_agent):
 def log_in(email_address, pass_word):
     logging.info(msg=f'Logging in {email_address}...')
     browser.get('https://login.live.com/')
-    time.sleep(0.5)
-    # wait for login form and enter email
-    wait_until_clickable(By.NAME, 'loginfmt', 10)
-    send_key_by_name('loginfmt', email_address)
-    time.sleep(0.5)
-    send_key_by_name('loginfmt', Keys.RETURN)
-    logging.debug(msg='Sent Email Address.')
-    # wait for password form and enter password
-    time.sleep(0.5)
-    wait_until_clickable(By.NAME, 'passwd', 10)
-    send_key_by_name('passwd', pass_word)
-    logging.debug(msg='Sent Password.')
-    # wait for 'sign in' button to be clickable and sign in
-    time.sleep(0.1)
-    send_key_by_name('passwd', Keys.RETURN)
-    time.sleep(1)
-    wait_until_visible(By.ID, 'uhfLogo', 10)
-    time.sleep(2)
+    time.sleep(1.5)
+    logging.debug(msg=browser.current_url)
+    if browser.current_url == 'https://login.live.com/':
+        # wait for login form and enter email
+        wait_until_clickable(By.NAME, 'loginfmt', 10)
+        send_key_by_name('loginfmt', email_address)
+        time.sleep(2)
+        send_key_by_name('loginfmt', Keys.RETURN)
+        logging.debug(msg='Sent Email Address.')
+        # wait for password form and enter password
+        time.sleep(2)
+        wait_until_clickable(By.NAME, 'passwd', 10)
+        send_key_by_name('passwd', pass_word)
+        logging.debug(msg='Sent Password.')
+        # wait for 'sign in' button to be clickable and sign in
+        browser.find_element_by_id("idChkBx_PWD_KMSI0Pwd").click()
+        time.sleep(2)
+        send_key_by_name('passwd', Keys.RETURN)
+        time.sleep(1)
+        wait_until_visible(By.ID, 'uhfLogo', 10)
+        time.sleep(60)
 
 
 def find_by_id(obj_id):
@@ -245,28 +271,20 @@ def find_by_css(selector):
 
 def wait_until_visible(by_, selector, time_to_wait=10):
     """
-    Wait until all objects matching selector are visible
-    :param by_: Select by ID, XPATH, CSS Selector, other, from By module
-    :param selector: string of selector
-    :param time_to_wait: Int time to wait
-    :return: None
+    Searches for selector and if found, end the loop
+    Else, keep repeating every 2 seconds until time elapsed, then refresh page
+    :param by_: string which tag to search by
+    :param selector: string selector
+    :param time_to_wait: int time to wait
+    :return: Boolean if selector is found
     """
-    try:
-        WebDriverWait(browser, time_to_wait).until(ec.visibility_of_element_located((by_, selector)))
-    except TimeoutException:
-        logging.exception(msg=f'{selector} element Not Visible - Timeout Exception', exc_info=False)
-        screenshot(selector)
+    start_time = time.time()
+    while (time.time() - start_time) < time_to_wait:
+        if browser.find_elements(by=by_, value=selector):
+            return True
         browser.refresh()
-    except UnexpectedAlertPresentException:
-        # FIXME
-        browser.switch_to.alert.dismiss()
-        # logging.exception(msg=f'{selector} element Not Visible - Unexpected Alert Exception', exc_info=False)
-        # screenshot(selector)
-        # browser.refresh()
-    except WebDriverException:
-        logging.exception(msg=f'Webdriver Error for {selector} object')
-        screenshot(selector)
-        browser.refresh()
+        time.sleep(2)
+    return False
 
 
 def wait_until_clickable(by_, selector, time_to_wait=10):
@@ -278,9 +296,11 @@ def wait_until_clickable(by_, selector, time_to_wait=10):
     :return: None
     """
     try:
-        WebDriverWait(browser, time_to_wait).until(ec.element_to_be_clickable((by_, selector)))
+        WebDriverWait(browser, time_to_wait).until(
+            ec.element_to_be_clickable((by_, selector)))
     except TimeoutException:
-        logging.exception(msg=f'{selector} element Not clickable - Timeout Exception', exc_info=False)
+        logging.exception(
+            msg=f'{selector} element Not clickable - Timeout Exception', exc_info=False)
         screenshot(selector)
         browser.refresh()
     except UnexpectedAlertPresentException:
@@ -305,7 +325,8 @@ def send_key_by_name(name, key):
     try:
         browser.find_element_by_name(name).send_keys(key)
     except (ElementNotVisibleException, ElementClickInterceptedException, ElementNotInteractableException):
-        logging.exception(msg=f'Send key by name to {name} element not visible or clickable.')
+        logging.exception(
+            msg=f'Send key by name to {name} element not visible or clickable.')
     except NoSuchElementException:
         logging.exception(msg=f'Send key to {name} element, no such element.')
         screenshot(name)
@@ -324,13 +345,16 @@ def send_key_by_id(obj_id, key):
     try:
         browser.find_element_by_id(obj_id).send_keys(key)
     except (ElementNotVisibleException, ElementClickInterceptedException, ElementNotInteractableException):
-        logging.exception(msg=f'Send key by ID to {obj_id} element not visible or clickable.')
+        logging.exception(
+            msg=f'Send key by ID to {obj_id} element not visible or clickable.')
     except NoSuchElementException:
-        logging.exception(msg=f'Send key by ID to {obj_id} element, no such element')
+        logging.exception(
+            msg=f'Send key by ID to {obj_id} element, no such element')
         screenshot(obj_id)
         browser.refresh()
     except WebDriverException:
-        logging.exception(msg=f'Webdriver Error for send key by ID to {obj_id} object')
+        logging.exception(
+            msg=f'Webdriver Error for send key by ID to {obj_id} object')
 
 
 def click_by_class(selector):
@@ -342,9 +366,11 @@ def click_by_class(selector):
     try:
         browser.find_element_by_class_name(selector).click()
     except (ElementNotVisibleException, ElementClickInterceptedException, ElementNotInteractableException):
-        logging.exception(msg=f'Send key by class to {selector} element not visible or clickable.')
+        logging.exception(
+            msg=f'Send key by class to {selector} element not visible or clickable.')
     except WebDriverException:
-        logging.exception(msg=f'Webdriver Error for send key by class to {selector} object')
+        logging.exception(
+            msg=f'Webdriver Error for send key by class to {selector} object')
 
 
 def click_by_id(obj_id):
@@ -356,9 +382,11 @@ def click_by_id(obj_id):
     try:
         browser.find_element_by_id(obj_id).click()
     except (ElementNotVisibleException, ElementClickInterceptedException, ElementNotInteractableException):
-        logging.exception(msg=f'Click by ID to {obj_id} element not visible or clickable.')
+        logging.exception(
+            msg=f'Click by ID to {obj_id} element not visible or clickable.')
     except WebDriverException:
-        logging.exception(msg=f'Webdriver Error for click by ID to {obj_id} object')
+        logging.exception(
+            msg=f'Webdriver Error for click by ID to {obj_id} object')
 
 
 def clear_by_id(obj_id):
@@ -370,9 +398,11 @@ def clear_by_id(obj_id):
     try:
         browser.find_element_by_id(obj_id).clear()
     except (ElementNotVisibleException, ElementNotInteractableException):
-        logging.exception(msg=f'Clear by ID to {obj_id} element not visible or clickable.')
+        logging.exception(
+            msg=f'Clear by ID to {obj_id} element not visible or clickable.')
     except NoSuchElementException:
-        logging.exception(msg=f'Send key by ID to {obj_id} element, no such element')
+        logging.exception(
+            msg=f'Send key by ID to {obj_id} element, no such element')
         screenshot(obj_id)
         browser.refresh()
     except WebDriverException:
@@ -422,9 +452,13 @@ def search(search_terms, mobile_search=False):
     :return: None
     """
     if mobile_search:
-        search_limit = 20
+        search_limit = 32
+        random.shuffle(search_terms)
+        search_terms = list(enumerate(search_terms, start=1))
     else:
-        search_limit = 40
+        search_limit = 42
+        random.shuffle(search_terms)
+        search_terms = list(enumerate(search_terms, start=1))
 
     logging.info(msg="Search Start")
     if search_terms == [] or search_terms is None:
@@ -439,29 +473,33 @@ def search(search_terms, mobile_search=False):
             try:
                 # clears search bar and enters in next search term
                 time.sleep(1)
-                wait_until_visible(By.ID, 'sb_form_q', 30)
+                wait_until_visible(By.ID, 'sb_form_q', 15)
                 clear_by_id('sb_form_q')
                 send_key_by_id('sb_form_q', item)
                 time.sleep(0.1)
                 send_key_by_id('sb_form_q', Keys.RETURN)
                 # prints search term and item, limited to 80 chars
                 logging.debug(msg=f'Search #{num}: {item[:80]}')
-                time.sleep(random.randint(3, 4))  # random sleep for more human-like, and let ms reward website keep up.
+                # random sleep for more human-like, and let ms reward website keep up.
+                time.sleep(random.randint(3, 4))
+                num = num+1
 
                 # check to see if search is complete, if yes, break out of loop
-                if  search_limit % num == 0:
-                    if mobile_search and num>1 :
+                if search_limit % num == 0 or num>search_limit:
+                    if mobile_search:
                         # in mobile mode, get point total does not work if no search is done, URL = 404
-                        if get_point_total(mobile=True):
+                        if (get_point_total(mobile=True) and num > 2) or num>search_limit :
                             logging.info(msg=f'Stopped at search number {num}')
                             return
                         # if point total not met, return to search page
                         browser.get(BING_SEARCH_URL)
+                        num = num-1
                     else:
-                        if get_point_total(pc=True):
+                        if get_point_total(pc=True) or num>search_limit:
                             logging.info(msg=f'Stopped at search number {num}')
                             return
                         browser.get(BING_SEARCH_URL)
+                        num = num-1
             except UnexpectedAlertPresentException:
                 # FIXME
                 browser.switch_to.alert.dismiss()
@@ -480,13 +518,19 @@ def iter_dailies():
     # TODO there is an error here where the object cannot be converted to data, only happens on digital ocean
     #   may be related to a wait after a sleep.
     #   stack overflow states that it is likely related to ram, need 2gb over 1gb.
-    open_offers = browser.find_elements_by_xpath('//span[contains(@class, "mee-icon-AddMedium")]')
+    open_offers = browser.find_elements_by_xpath(
+        '//span[contains(@class, "mee-icon-AddMedium")]')
     if open_offers:
         logging.info(msg=f'Number of incomplete offers: {len(open_offers)}')
         # get common parent element of open_offers
-        parent_elements = [open_offer.find_element_by_xpath('..//..//..//..') for open_offer in open_offers]
+        parent_elements = [open_offer.find_element_by_xpath(
+            '..//..//..//..') for open_offer in open_offers]
         # get points links from parent, # finds ng-transclude descendant of selected node
-        offer_links = [parent.find_element_by_xpath('descendant::ng-transclude') for parent in parent_elements]
+        offer_links = [
+            parent.find_element_by_xpath(
+                'div[contains(@class,"actionLink")]//descendant::a')
+            for parent in parent_elements
+        ]
         # iterate through the dailies
         for offer in offer_links:
             time.sleep(3)
@@ -524,8 +568,13 @@ def iter_dailies():
         browser.get(DASHBOARD_URL)
         time.sleep(0.1)
         wait_until_visible(By.TAG_NAME, 'body', 10)
-        open_offers = browser.find_elements_by_xpath('//span[contains(@class, "mee-icon-AddMedium")]')
-        logging.info(msg=f'Number of incomplete offers remaining: {len(open_offers)}')
+        open_offers = browser.find_elements_by_xpath(
+            '//span[contains(@class, "mee-icon-AddMedium")]')
+        logging.info(
+            msg=f'Number of incomplete offers remaining: {len(open_offers)}')
+        if len(open_offers)!=0 :
+            winsound.Beep(600,3000)
+            input("Press Enter to continue...")
     else:
         logging.info(msg='No dailies found.')
 
@@ -566,22 +615,23 @@ def daily_poll():
 def lightning_quiz():
     for question_round in range(10):
         logging.debug(msg=f'Round# {question_round}')
-        # iterate through 4 choices
-        for i in range(4):
-            click_choices = find_by_class('rqOption')
-            if click_choices:
-                i = click_choices[i]
-                # if object is stale, greyed out, or not visible, skip it
-                if i.is_displayed():
+        if find_by_id('rqAnswerOption0'):
+            first_page = browser.find_element_by_id('rqAnswerOption0').get_attribute("data-serpquery")
+            browser.get(f"https://www.bing.com{first_page}")
+            time.sleep(3)
+            for i in range(10):
+                if find_by_id(f'rqAnswerOption{i}'):
+                    browser.execute_script(f"document.querySelector('#rqAnswerOption{i}').click();")
                     logging.debug(msg=f'Clicked {i}')
-                    i.click()
                     time.sleep(2)
         # let new page load
         time.sleep(3)
         if find_by_id('quizCompleteContainer'):
             break
     # close the quiz completion splash
-    find_by_css('.cico.btCloseBack')[0].click()
+    quiz_complete = find_by_css('.cico.btCloseBack')
+    if quiz_complete:
+        quiz_complete[0].click()
     time.sleep(3)
     main_window()
 
@@ -637,7 +687,9 @@ def drag_and_drop_quiz():
                 break
     # close the quiz completion splash
     time.sleep(3)
-    find_by_css('.cico.btCloseBack')[0].click()
+    quiz_complete = find_by_css('.cico.btCloseBack')
+    if quiz_complete:
+        quiz_complete[0].click()
     time.sleep(3)
     main_window()
 
@@ -660,27 +712,40 @@ def get_point_total(pc=False, mobile=False, log=False):
     browser.get(POINT_TOTAL_URL)
     # get number of total number of points
     wait_until_visible(By.XPATH, '//*[@id="flyoutContent"]', 10)
-    pcsearch = browser.find_element_by_class_name('pcsearch')
-    pcsearch.location_once_scrolled_into_view
     try:
-        current_point_total = list(map(int, browser.find_element_by_class_name('credits2').text.split(' of ')))[0]
+        pcsearch = browser.find_element_by_class_name('pcsearch')
+        pcsearch.location_once_scrolled_into_view
+    except :
+        current_point_total=1
+        current_pc_points, max_pc_points=10,100
+    try:
+        current_point_total = list(
+            map(int, browser.find_element_by_class_name('credits2').text.split(' of ')))[0]
         # get pc points
-        current_pc_points, max_pc_points = map(int, browser.find_element_by_class_name('pcsearch').text.split('/'))
+        current_pc_points, max_pc_points = map(
+            int, browser.find_element_by_class_name('pcsearch').text.split('/'))
         # get mobile points
         current_mobile_points, max_mobile_points = \
-            map(int, browser.find_element_by_class_name('mobilesearch').text.split('/'))
+            map(int, browser.find_element_by_class_name(
+                'mobilesearch').text.split('/'))
         # get edge points
-        current_edge_points, max_edge_points = map(int,
-                                                   browser.find_element_by_class_name('edgesearch').text.split('/'))
+        current_edge_points, max_edge_points = map(int,browser.find_element_by_class_name('edgesearch').text.split('/'))
     except ValueError as e:
         return False
+    except:
+        current_edge_points=20
+        max_edge_points=20
+        current_mobile_points, max_mobile_points=90,100
+        current_pc_points, max_pc_points=140,150
 
     # if log flag is provided, log the point totals
     if log:
         logging.info(msg=f'Total points = {current_point_total}')
         logging.info(msg=f'PC points = {current_pc_points}/{max_pc_points}')
-        logging.info(msg=f'Edge points = {current_edge_points}/{max_edge_points}')
-        logging.info(msg=f'Mobile points = {current_mobile_points}/{max_mobile_points}')
+        logging.info(
+            msg=f'Edge points = {current_edge_points}/{max_edge_points}')
+        logging.info(
+            msg=f'Mobile points = {current_mobile_points}/{max_mobile_points}')
 
     # if pc flag, check if pc and edge points met
     if pc:
@@ -692,7 +757,6 @@ def get_point_total(pc=False, mobile=False, log=False):
         if current_mobile_points < max_mobile_points:
             return False
         return True
-
 
 
 def get_email_links():
@@ -716,7 +780,7 @@ def click_email_links(links):
     """
     for link in links:
         browser.get(link)
-        input('Press any key to continue.')
+        time.sleep(5)
 
 
 def ensure_pc_mode_logged_in():
@@ -751,7 +815,6 @@ if __name__ == '__main__':
 
         # get search terms
         search_list = []
-        
 
         # get URLs from emailed links
         email_links = []
@@ -760,20 +823,24 @@ if __name__ == '__main__':
 
         # iter through accounts, search, and complete quizzes
         login_dict_keys = list(login_dict.keys())
-        random.shuffle(login_dict_keys)
+        #random.shuffle(login_dict_keys)
         for dict_key in login_dict_keys:
             email = dict_key
-            password = login_dict[dict_key]
+            password = login_dict[dict_key]["passwd"]
+            dataloc = login_dict[dict_key]["id"]
             if parser.mobile_mode or parser.pc_mode:
                 search_list = get_search_terms()
             if parser.mobile_mode:
                 # MOBILE MODE
-                logging.info(msg='-------------------------MOBILE-------------------------')
+                logging.info(
+                    msg='-------------------------MOBILE-------------------------')
                 # set up headless browser and mobile user agent
-                browser = browser_setup(parser.headless_setting, MOBILE_USER_AGENT)
+                datamob = "Chromesets\\"+dataloc+"-phone\\"
+                browser = browser_setup(
+                    parser.headless_setting, MOBILE_USER_AGENT, datamob)
                 try:
                     log_in(email, password)
-                    browser.get(DASHBOARD_URL) # FIXME!!
+                    browser.get(DASHBOARD_URL)  # FIXME!!
                     browser.get(BING_SEARCH_URL)
                     # mobile search
                     search(search_list, mobile_search=True)
@@ -781,17 +848,24 @@ if __name__ == '__main__':
                     if not parser.pc_mode or not parser.quiz_mode or not parser.email_mode:
                         get_point_total(mobile=True, log=True)
                     browser.quit()
+                    time.sleep(2)
                 except KeyboardInterrupt:
                     browser.quit()
+                    time.sleep(2)
                 except WebDriverException:
-                    logging.info(msg=f'WebDriverException while executing mobile portion', exc_info=True)
+                    logging.info(
+                        msg=f'WebDriverException while executing mobile portion', exc_info=True)
                     browser.quit()
+                    time.sleep(2)
 
             if parser.pc_mode or parser.quiz_mode or parser.email_mode:
                 # PC MODE
-                logging.info(msg='-------------------------PC-------------------------')
+                logging.info(
+                    msg='-------------------------PC-------------------------')
                 # set up edge headless browser and edge pc user agent
-                browser = browser_setup(parser.headless_setting, PC_USER_AGENT)
+                datapc = "Chromesets\\"+dataloc+"-pc\\"
+                browser = browser_setup(
+                    parser.headless_setting, PC_USER_AGENT, datapc)
                 try:
                     log_in(email, password)
                     browser.get(DASHBOARD_URL)  # FIXME!!
@@ -810,9 +884,14 @@ if __name__ == '__main__':
                 except KeyboardInterrupt:
                     print('Stopping Script...')
                 except WebDriverException:
-                    logging.error(msg=f'WebDriverException while executing pc portion', exc_info=True)
+                    logging.error(
+                        msg=f'WebDriverException while executing pc portion', exc_info=True)
                 finally:
                     browser.quit()
-            # logging.info(msg='\n\n')
+                    time.sleep(2)
+            logging.info(msg=email+' done  \n\n')
+            torswitch.changeproxy()
+        Cleanup.cleancache()
+
     except WebDriverException:
         logging.exception(msg='Failure at main()')
